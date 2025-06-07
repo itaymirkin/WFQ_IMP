@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "heap.h"
 
 #define MAX_CONNECTIONS 10000
 #define MAX_PACKETS 100000
@@ -28,6 +29,7 @@ typedef struct {
     double weight;  // Weight affects virtual service time
     int packet_id;  // For debugging
     int has_weight;
+    double virtual_arrival_time;
 } Packet;
 
 // Structure for representing a network connection
@@ -47,6 +49,7 @@ typedef struct {
     int fifo_start;
     int fifo_end;
     int active;      // Is connection currently active?
+    int virtual_fifo_start;
 } Connection;
 
 // Global variables
@@ -55,9 +58,15 @@ Packet packets[MAX_PACKETS];
 int num_connections = 0;
 int num_packets = 0;
 int current_time = 0;
+int next_departure_time = 0;
+int packets_sent = 0;
+
+
+double total_weight = 1;
 
 //Global virtual time for system synchronization ***
 double global_virtual_time = 0.0;
+double global_virtual_time_last_update = 0.0;
 
 // ========== CONNECTION MANAGEMENT ==========
 
@@ -91,12 +100,78 @@ int create_connection(const char* src_addr, int src_port, const char* dst_addr, 
     connections[conn_id].fifo_start = 0;
     connections[conn_id].fifo_end = 0;
     connections[conn_id].active = 0;
+    connections[conn_id].virtual_fifo_start = 0;
+
     return conn_id;
 }
 
+// ***  FUNCTION: Calculate total weight of all connections ***
+double calculate_total_weight() {
+    double total = 0.0;
+    for (int i = 0; i < num_connections; i++) {
+        //total += connections[i].weight;
 
+        Connection* conn = &connections[i];
+        Packet* pkt = conn->fifo[conn->virtual_fifo_start];
+        if (conn->pending_packets == 0 || pkt->arrival_time > current_time) {
 
-void add_packet(int time, const char* src_addr, int src_port, const char* dst_addr, int dst_port, int length, double weight, int has_weight) {
+            continue;
+        }
+        //printf("%.2f\n", conn->fifo[conn->fifo_start]->weight);
+        total += conn->fifo[conn->fifo_start]->weight; // Calculate the total weight according to the FIFO queue
+    }
+    return total > 0.0 ? total : 1.0; // Prevent division by zero
+}
+
+void update_global_virtual_time(int real_time, MinHeap* heap) {
+
+    double next_virtual_departure_time;
+    double real_time_at_virtual_departure;
+
+    //if (heap->size > 0) {
+    //    next_virtual_departure_time = heap->data[0].finish_time;
+    //
+    //    real_time_at_virtual_departure = (next_virtual_departure_time - global_virtual_time) * total_weight + global_virtual_time_last_update;
+
+    //    double new_delta_time = real_time - global_virtual_time_last_update;
+    //    double new_virtual_time = global_virtual_time + new_delta_time / total_weight;
+
+    //    while (next_virtual_departure_time <= new_virtual_time)
+    //    {
+    //        double delta_time = real_time_at_virtual_departure - global_virtual_time_last_update;
+    //        //double total_weight = calculate_total_weight();
+    //        global_virtual_time += delta_time / total_weight;
+    //        global_virtual_time_last_update = real_time_at_virtual_departure;
+
+    //        // Remove the packet from the heap
+    //        Connection * conn = &connections[extract_min(heap).flow_id];
+
+    //        // Update the total weight accordingly 
+    //        total_weight -= conn->fifo[conn->virtual_fifo_start]->weight; // Get the weight of the packet being sent
+    //        conn->virtual_fifo_start++;
+    //        if (conn->virtual_fifo_start < conn->fifo_end) total_weight += conn->fifo[conn->virtual_fifo_start]->weight;
+
+    //        if (heap->size == 0) break; // If heap is empty, exit the loop
+
+    //        // Check the time of the next packet in the heap
+    //        next_virtual_departure_time = heap->data[0].finish_time;
+    //        real_time_at_virtual_departure = (next_virtual_departure_time - global_virtual_time) * total_weight + global_virtual_time_last_update;
+
+    //        new_delta_time = real_time - global_virtual_time_last_update;
+    //        new_virtual_time = global_virtual_time + new_delta_time / total_weight;
+    //    }
+    //}
+  
+
+    if (real_time > global_virtual_time_last_update) {
+        double delta_time = real_time - global_virtual_time_last_update;
+        double total_weight = calculate_total_weight();
+        global_virtual_time += delta_time / total_weight;
+        global_virtual_time_last_update = real_time;
+    }
+}
+
+void add_packet(int time, const char* src_addr, int src_port, const char* dst_addr, int dst_port, int length, double weight, int has_weight, MinHeap* heap) {
     if (num_packets >= MAX_PACKETS) {
         fprintf(stderr, "Too many packets\n");
         exit(1);
@@ -132,6 +207,15 @@ void add_packet(int time, const char* src_addr, int src_port, const char* dst_ad
         //new_packet->weight = 1.00;
     }
 
+    new_packet->virtual_arrival_time = global_virtual_time;
+    new_packet->virtual_start_time = fmax(conn->virtual_time, new_packet->virtual_arrival_time);
+    new_packet->virtual_finish_time = new_packet->virtual_start_time + ((double)new_packet->length / new_packet->weight);
+    insert(heap, (HeapNode){new_packet->virtual_finish_time, conn_id});
+
+    if (conn->virtual_fifo_start == conn->fifo_end) total_weight += new_packet->weight; // Add weight of the new packet to total weight
+
+    conn->virtual_time = new_packet->virtual_finish_time; // Update connection's virtual time
+
     // Add packet to connection's FIFO queue
     conn->fifo[conn->fifo_end] = new_packet;
     conn->fifo_end++;
@@ -139,73 +223,66 @@ void add_packet(int time, const char* src_addr, int src_port, const char* dst_ad
     num_packets++;
 }
 
-// ***  FUNCTION: Calculate total weight of all connections ***
-double calculate_total_weight() {
-    double total = 0.0;
-    for (int i = 0; i < num_connections; i++) {
-        //total += connections[i].weight;
-        
-        Connection* conn = &connections[i];
-        Packet* pkt = conn->fifo[conn->fifo_start];
-        if (conn->pending_packets == 0 || pkt->arrival_time > current_time) {
 
-            continue;
-        }
-        //printf("%.2f\n", conn->fifo[conn->fifo_start]->weight);
-        total +=  conn->fifo[conn->fifo_start]->weight; // Calculate the total weight according to the FIFO queue
-    }
-    return total > 0.0 ? total : 1.0; // Prevent division by zero
-}
 
 // ***  FUNCTION: Calculate packet virtual times dynamically ***
 void calculate_packet_virtual_times(Packet* packet, double total_weight) {
     Connection* conn = &connections[packet->conn_id];
 
-    packet->virtual_start_time = fmax(conn->virtual_time, global_virtual_time);
+    //double virtual_arrival_time = global_virtual_time + 
+    //packet->virtual_start_time = fmax(conn->virtual_time,packet->arrival_time);
 
     // Proper  formula: service_time = (packet_length / connection_weight) * total_weight
-    double service_time = ((double)packet->length / packet->weight) * total_weight;
+    double service_time = ((double)packet->length / packet->weight);
 
     packet->virtual_finish_time = packet->virtual_start_time + service_time;
 }
-// ========== MAIN SCHEDULING LOOP ==========
 
-int main() {
-    char line[256];
-    int time, src_port, dst_port, length;
-    char src_addr[16], dst_addr[16];
 
-    // Read all inputs first 
-    while (fgets(line, sizeof(line), stdin) != NULL) {
-        double weight = -1.0;
-        int items = sscanf(line, "%d %15s %d %15s %d %d %lf",
-            &time, src_addr, &src_port, dst_addr, &dst_port, &length, &weight);
-
-        if (items < 6) {
-            fprintf(stderr, "Invalid input format: %s", line);
-            continue;
-        }
-
-        add_packet(time, src_addr, src_port, dst_addr, dst_port, length, weight, (items == 7) ? 1: 0);
-    }
-
-    printf("Loaded %d packets across %d connections\n", num_packets, num_connections);
-
-    int packets_sent = 0;
-
-    // Initialize all virtual times to 0
-    global_virtual_time = 0.0;
-    for (int i = 0; i < num_connections; i++) {
-        connections[i].virtual_time = 0.0;
-    }
-
+int scheduling_loop(int next_time) {
     // ***  MAIN SCHEDULING LOOP ***
-    while (packets_sent < num_packets) {
-        Packet* best_packet = NULL;
-        int best_conn_index = -1;
+   
+        static Packet* best_packet = NULL;
+        static int best_conn_index = -1;
         double best_virtual_finish_time = INFINITY;
 
-        double total_weight = calculate_total_weight();
+        //double total_weight = calculate_total_weight();
+
+        static int start_time;
+
+        // Update the queue when the packet actually finish sending to maintain correct virtual time  
+        if (best_packet != NULL)
+        {
+            // Send the selected packet
+            Connection* conn = &connections[best_conn_index];
+
+            printf("%d: %d %s %d %s %d %d",
+                start_time,
+                best_packet->arrival_time,
+                conn->src_addr,
+                conn->src_port,
+                conn->dst_addr,
+                conn->dst_port,
+                best_packet->length);
+
+            //if (fabs(best_packet->weight - 1.0) > 1e-6) {
+            if (best_packet->has_weight) {
+                printf(" %.2f", best_packet->weight);
+            }
+
+            printf("\n");
+
+            // *** : Update connection virtual time after scheduling ***
+            //conn->virtual_time = best_packet->virtual_finish_time;
+
+            // Mark packet as processed and update queues
+            best_packet->processed = 1;
+            conn->fifo_start++;
+            conn->pending_packets--;
+            packets_sent++;
+        }
+
+        best_packet = NULL; // Reset best packet for next iteration to track if a packet was found
 
         // Calculate virtual times for all eligible packets and find the best one
         for (int i = 0; i < num_connections; i++) {
@@ -217,7 +294,7 @@ int main() {
 
             if (!pkt->processed && pkt->arrival_time <= current_time) {
                 // Calculate virtual times for this packet
-                calculate_packet_virtual_times(pkt, total_weight);
+                //calculate_packet_virtual_times(pkt, total_weight);
 
                 // ***  SELECTION RULE: Earliest virtual finish time wins ***
                 int is_better = 0;
@@ -246,10 +323,10 @@ int main() {
             }
         }
 
-        
+
         // Debug output for specific time
-        if (0) {
-            if (current_time == 312490) {
+        if (1) {
+            if (current_time == 316819) {
                 printf("DEBUG at time %d (Global VT: %.6f):\n", current_time, global_virtual_time);
 
                 for (int i = 0; i < num_connections; i++) {
@@ -259,10 +336,10 @@ int main() {
 
                     Packet* pkt = conn->fifo[conn->fifo_start];
                     if (!pkt->processed && pkt->arrival_time <= current_time) {
-                        calculate_packet_virtual_times(pkt, total_weight);
-                        printf("  Conn %d (port %d): VFT=%.6f, weight=%.2f, length=%d, arrival=%d, VST=%.6f, Total Weight=%.2f\n",
+                        //calculate_packet_virtual_times(pkt, total_weight);
+                        printf("  Conn %d (port %d): VFT=%.6f, weight=%.2f, length=%d, arrival=%d, VAT=%.6f, VST=%.6f, Previous Packet VFT=%.6f, Total Weight=%.2f\n",
                             i, conn->src_port, pkt->virtual_finish_time,
-                            pkt->weight, pkt->length, pkt->arrival_time, pkt->virtual_start_time, total_weight);
+                            pkt->weight, pkt->length, pkt->arrival_time, pkt->virtual_arrival_time,pkt->virtual_start_time, conn->fifo[conn->fifo_start-1]->virtual_finish_time, calculate_total_weight());
                     }
                 }
 
@@ -271,50 +348,90 @@ int main() {
                         best_conn_index, connections[best_conn_index].src_port,
                         best_packet->virtual_finish_time);
                 }
-                break;
+                
             }
         }
 
         // If no packets are ready, advance time
         if (!best_packet) {
-            current_time++;
+            /*current_time++;
+            continue;*/
+            
+            next_departure_time = next_time; // If there are not packets ready, just advance time to the next input
+            return 1;
+        }
+
+        // Set the start time according to time of the last departure or the packet arrival time
+        start_time = fmax(next_departure_time, best_packet->arrival_time);
+
+        // Advance current time by packet transmission time
+        next_departure_time = start_time + best_packet->length;
+
+        
+        // If successfully scheduled a packet return 0
+        return 0; 
+
+
+        // Update global virtual time on packet departure
+        //global_virtual_time = fmax(global_virtual_time, best_packet->virtual_finish_time);
+        //global_virtual_time = global_virtual_time + (best_packet->length / total_weight);
+        //update_global_virtual_time(current_time);
+
+    
+}
+
+// ========== MAIN SCHEDULING LOOP ==========
+
+int main() {
+    char line[256];
+    int time, src_port, dst_port, length;
+    char src_addr[16], dst_addr[16];
+
+    // Set up heap for virtual finish time 
+    MinHeap* virtual_finish_time_heap = create_heap(0);
+
+    // Initialize all virtual times to 0
+    global_virtual_time = 0.0;
+    for (int i = 0; i < num_connections; i++) {
+        connections[i].virtual_time = 0.0;
+    }
+
+    // Read all inputs first 
+    while (fgets(line, sizeof(line), stdin) != NULL) {
+        double weight = -1.0;
+        int items = sscanf(line, "%d %15s %d %15s %d %d %lf",
+            &time, src_addr, &src_port, dst_addr, &dst_port, &length, &weight);
+
+        if (items < 6) {
+            fprintf(stderr, "Invalid input format: %s", line);
             continue;
         }
 
-        // Send the selected packet
-        Connection* conn = &connections[best_conn_index];
-        int start_time = fmax(current_time, best_packet->arrival_time);
-
-        printf("%d: %d %s %d %s %d %d",
-            start_time,
-            best_packet->arrival_time,
-            conn->src_addr,
-            conn->src_port,
-            conn->dst_addr,
-            conn->dst_port,
-            best_packet->length);
-
-        //if (fabs(best_packet->weight - 1.0) > 1e-6) {
-        if (best_packet->has_weight) {
-            printf(" %.2f", best_packet->weight);
+        while (time >= next_departure_time)
+        {
+            update_global_virtual_time(next_departure_time, virtual_finish_time_heap);
+            current_time = next_departure_time;
+            if (scheduling_loop(time) == 1) break;
         }
 
-        printf("\n");
 
-        // *** : Update connection virtual time after scheduling ***
-        conn->virtual_time = best_packet->virtual_finish_time;
+       
+        update_global_virtual_time(time,virtual_finish_time_heap); // Update global virtual time based on real time input
+        add_packet(time, src_addr, src_port, dst_addr, dst_port, length, weight, (items == 7) ? 1: 0,virtual_finish_time_heap);
+        
+        current_time = time;
+    }
 
-        // Mark packet as processed and update queues
-        best_packet->processed = 1;
-        conn->fifo_start++;
-        conn->pending_packets--;
-        packets_sent++;
+    //printf("Loaded %d packets across %d connections\n", num_packets, num_connections);
 
-        // Advance current time by packet transmission time
-        current_time = start_time + best_packet->length;
 
-        // *** : Update global virtual time ***
-        global_virtual_time = fmax(global_virtual_time, best_packet->virtual_finish_time);
+    //puts("\nFinished reading inputs\n");
+
+    while (packets_sent < num_packets) 
+    {
+        update_global_virtual_time(next_departure_time,virtual_finish_time_heap);
+        current_time = next_departure_time;
+        scheduling_loop(current_time);
     }
 
     return 0;
