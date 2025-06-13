@@ -216,11 +216,13 @@ void add_packet(int time, const char* src_addr, int src_port, const char* dst_ad
     new_packet->virtual_start_time = fmax(conn->virtual_time, new_packet->virtual_arrival_time);
     new_packet->virtual_finish_time = new_packet->virtual_start_time + ((double)new_packet->length / new_packet->weight);
 
-    insert(heap, (HeapNode){new_packet->virtual_finish_time, conn_id}); // Consider using this to scheduele packets
+    HeapNode heap_node = {new_packet->virtual_finish_time, new_packet->arrival_time, new_packet->packet_id, conn_id};
+
+    insert(heap, heap_node);
 
     if (conn->pending_packets == 0) total_weight += new_packet->weight; // Add weight of the new packet to total weight
 
-    conn->virtual_time = new_packet->virtual_finish_time; // Update connection's lastest packet's VFT to be used to calculate the next packet's VFT
+    conn->virtual_time = new_packet->virtual_finish_time; // Update connection's latest packet's VFT to be used to calculate the next packet's VFT
 
     // Add packet to connection's FIFO queue
     conn->fifo[conn->fifo_end] = new_packet;
@@ -246,13 +248,13 @@ void add_packet(int time, const char* src_addr, int src_port, const char* dst_ad
 //}
 
 
-int scheduling_loop(int next_time) {
+int scheduling_loop(int next_time, MinHeap* pkt_heap) {
     // ***  MAIN SCHEDULING LOOP ***
    
         static Packet* best_packet = NULL;
         static int best_conn_index = -1;
         double best_virtual_finish_time = INFINITY;
-
+        static  Connection* conn = NULL;
         //double total_weight = calculate_total_weight();
 
         static int start_time;
@@ -261,7 +263,8 @@ int scheduling_loop(int next_time) {
         if (best_packet != NULL)
         {
             // Send the selected packet
-            Connection* conn = &connections[best_conn_index];
+            //Connection* conn = &connections[best_conn_index];
+            
 
             printf("%d: %d %s %d %s %d %d",
                 start_time,
@@ -296,6 +299,7 @@ int scheduling_loop(int next_time) {
 
         best_packet = NULL; // Reset best packet for next iteration to track if a packet was found
 
+        /*
         // Calculate virtual times for all eligible packets and find the best one
         for (int i = 0; i < num_connections; i++) {
             Connection* conn = &connections[i];
@@ -334,7 +338,9 @@ int scheduling_loop(int next_time) {
                 }
             }
         }
+        */
 
+        
 
         // Debug output for specific time
         if (0) {
@@ -365,7 +371,7 @@ int scheduling_loop(int next_time) {
         }
 
         // If no packets are ready, advance time
-        if (!best_packet) {
+        if (pkt_heap->size == 0) {
             /*current_time++;
             continue;*/
             
@@ -373,6 +379,12 @@ int scheduling_loop(int next_time) {
             return 1;
         }
 
+        else
+        {
+            int conn_id = extract_min(pkt_heap).flow_id;
+            conn = &connections[conn_id];
+            best_packet = conn->fifo[conn->fifo_start]; // Extract the packet with the earliest virtual finish time
+        }
         // Set the start time according to time of the last departure or the packet arrival time
         start_time = fmax(next_departure_time, best_packet->arrival_time);
 
@@ -401,7 +413,7 @@ int main() {
 
     // This is not being used - Consider using these to determine schedueling
     // Set up heap for virtual finish time
-    MinHeap* virtual_finish_time_heap = create_heap(0);
+    MinHeap* pkt_heap = create_heap(0);
 
     // Initialize all virtual times to 0
     global_virtual_time = 0.0;
@@ -424,13 +436,13 @@ int main() {
         {
             update_global_virtual_time(next_departure_time);
             current_time = next_departure_time;
-            if (scheduling_loop(time) == 1) break;
+            if (scheduling_loop(time, pkt_heap) == 1) break;
         }
 
 
        
         update_global_virtual_time(time); // Update global virtual time based on real time input
-        add_packet(time, src_addr, src_port, dst_addr, dst_port, length, weight, (items == 7) ? 1: 0, virtual_finish_time_heap);
+        add_packet(time, src_addr, src_port, dst_addr, dst_port, length, weight, (items == 7) ? 1: 0, pkt_heap);
         
         current_time = time;
     }
@@ -445,8 +457,9 @@ int main() {
     {
         update_global_virtual_time(next_departure_time);
         current_time = next_departure_time;
-        scheduling_loop(current_time);
+        scheduling_loop(current_time, pkt_heap);
     }
 
+    free_heap(pkt_heap);
     return 0;
 }

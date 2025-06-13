@@ -10,10 +10,24 @@ static void swap(HeapNode* a, HeapNode* b) {
     *b = temp;
 }
 
+static int compare(const HeapNode* a, const HeapNode* b) {
+    if (a->finish_time < b->finish_time - 1e-9) return -1;
+    if (a->finish_time > b->finish_time + 1e-9) return 1;
+
+    if (a->arrival_time < b->arrival_time) return -1;
+    if (a->arrival_time > b->arrival_time) return 1;
+
+    if (a->packet_id < b->packet_id) return -1;
+    if (a->packet_id > b->packet_id) return 1;
+
+    return 0; // equal
+}
+
+
 static void heapify_up(MinHeap* heap, int index) {
     while (index > 0) {
         int parent = (index - 1) / 2;
-        if (heap->data[index].finish_time < heap->data[parent].finish_time) {
+        if (compare(&heap->data[index], &heap->data[parent]) < 0) {
             swap(&heap->data[index], &heap->data[parent]);
             index = parent;
         }
@@ -21,14 +35,15 @@ static void heapify_up(MinHeap* heap, int index) {
     }
 }
 
+
 static void heapify_down(MinHeap* heap, int index) {
     int smallest = index;
     int left = 2 * index + 1;
     int right = 2 * index + 2;
 
-    if (left < heap->size && heap->data[left].finish_time < heap->data[smallest].finish_time)
+    if (left < heap->size && compare(&heap->data[left], &heap->data[smallest]) < 0)
         smallest = left;
-    if (right < heap->size && heap->data[right].finish_time < heap->data[smallest].finish_time)
+    if (right < heap->size && compare(&heap->data[right], &heap->data[smallest]) < 0)
         smallest = right;
 
     if (smallest != index) {
@@ -36,6 +51,7 @@ static void heapify_down(MinHeap* heap, int index) {
         heapify_down(heap, smallest);
     }
 }
+
 
 MinHeap* create_heap(int capacity) {
     if (capacity <= 0) capacity = 16; // minimal default
