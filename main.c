@@ -183,9 +183,7 @@ int scheduling_loop(int next_time, MinHeap* pkt_heap) {
         if (best_packet != NULL)
         {
             // Send the selected packet
-            //Connection* conn = &connections[best_conn_index];
             
-
             printf("%d: %d %s %d %s %d %d",
                 start_time,
                 best_packet->arrival_time,
@@ -250,8 +248,7 @@ int scheduling_loop(int next_time, MinHeap* pkt_heap) {
 
         // If no packets are ready, advance time
         if (pkt_heap->size == 0) {
-            /*current_time++;
-            continue;*/
+            
             
             next_departure_time = next_time; // If there are not packets ready, just advance time to the next input
             return 1;
